@@ -24,21 +24,23 @@ parser = argparse.ArgumentParser(
     formatter_class=argparse.ArgumentDefaultsHelpFormatter,
 )
 #path = '/mnt/storage/scratch/ge20118/MagnaTagATune/'
-cwd = os.getcwd()
-path = os.path.join(cwd, 'MagnaTagATune', 'MagnaTagATune')
+path = '/user/work/fn20123/MagnaTagATune/'
+#cwd = os.getcwd()
+#path = os.path.join(cwd, 'MagnaTagATune', 'MagnaTagATune')
 parser.add_argument("--log-dir", default=Path("logs"), type=Path)
 parser.add_argument("--learning-rate", default=1e-1, type=float, help="Learning rate")
 parser.add_argument("--length", default=256, type=int, help="length")
 parser.add_argument("--stride", default=256, type=int, help="stride")
+parser.add_argument("--mom", default=0.9, type=float, help="momentum")
 parser.add_argument(
     "--batch-size",
-    default=2,
+    default=10,
     type=int,
     help="Number of images within each mini-batch",
 )
 parser.add_argument(
     "--epochs",
-    default=20,
+    default=10,
     type=int,
     help="Number of epochs (passes through the entire dataset) to train for",
 )
@@ -56,18 +58,21 @@ parser.add_argument(
 )
 parser.add_argument(
     "--print-frequency",
-    default=10,
+    default=100,
     type=int,
     help="How frequently to print progress to the command line in number of steps",
 )
 parser.add_argument(
     "-j",
     "--worker-count",
-    default=cpu_count(),
+    default=os.cpu_count(),
     type=int,
     help="Number of worker processes used to load data.",
 )
 
+## changes: best so far is lr 1e-1, mom 0.5, epoch 20 - control - accuracy of 82.7
+## lr 1e-2, mom 0.5, lr 1e-1 mom 0.9, lr 1e-1 mom 0.5, lr 1e-2 mom 0.9
+# best is lr 1e-1 mom 0.9
 if torch.cuda.is_available():
     DEVICE = torch.device("cuda")
     print('cuda')
@@ -79,27 +84,27 @@ def main(args):
     # print(args.worker_count)
     #transform = transforms.ToTensor()
     #args.dataset_root.mkdir(parents=True, exist_ok=True)
-    # train_dataset = MagnaTagATune(dataset_path=f'{path}annotations/train_labels.pkl', samples_path=f'{path}samples/')
-    # test_dataset = MagnaTagATune(dataset_path=f'{path}annotations/val_labels.pkl', samples_path=f'{path}samples/')
-    train_dataset = MagnaTagATune(dataset_path=os.path.join(path, 'annotations', 'train_labels.pkl'), samples_path=os.path.join(path, 'samples'))
-    test_dataset = MagnaTagATune(dataset_path=os.path.join(path, 'annotations', 'val_labels.pkl'), samples_path=os.path.join(path, 'samples'))
+    train_dataset = MagnaTagATune(dataset_path=f'{path}annotations/train_labels.pkl', samples_path=f'{path}samples')
+    test_dataset = MagnaTagATune(dataset_path=f'{path}annotations/val_labels.pkl', samples_path=f'{path}samples')
+    #train_dataset = MagnaTagATune(dataset_path=os.path.join(path, 'annotations', 'train_labels.pkl'), samples_path=os.path.join(path, 'samples'))
+    #test_dataset = MagnaTagATune(dataset_path=os.path.join(path, 'annotations', 'val_labels.pkl'), samples_path=os.path.join(path, 'samples'))
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         shuffle=True,
         batch_size=args.batch_size,
         pin_memory=True,
-        num_workers=10,
+        num_workers=args.worker_count,
     )
     test_loader = torch.utils.data.DataLoader(
         test_dataset,
         shuffle=False,
         batch_size=args.batch_size,
-        num_workers=10,
+        num_workers=args.worker_count,
         pin_memory=True,
     )
     model = CNN(args=args)
     criterion = nn.BCELoss()
-    optimizer = torch.optim.SGD(model.parameters(), lr=args.learning_rate)
+    optimizer = torch.optim.SGD(model.parameters(), lr=args.learning_rate, momentum = args.mom)
     log_dir = get_summary_writer_log_dir(args)
     print(f"Writing logs to {log_dir}")
     summary_writer = SummaryWriter(
@@ -124,43 +129,54 @@ class CNN(nn.Module):
         super().__init__()
         # TODO in channels?
         self.conv1 = nn.Conv1d(in_channels=1, out_channels=32, kernel_size=args.length, stride=args.stride)
+        self.bn1 = nn.BatchNorm1d(32)
         self.initialise_layer(self.conv1)
         self.conv2 = nn.Conv1d(in_channels=32, out_channels=32, kernel_size=8)
         self.initialise_layer(self.conv2)
+        self.bn2 = nn.BatchNorm1d(32)
         self.pool = nn.MaxPool1d(kernel_size=4)
         self.conv3 = nn.Conv1d(in_channels=32, out_channels=32, kernel_size=8)
+        self.bn3 = nn.BatchNorm1d(32)
         self.initialise_layer(self.conv3)
         self.fc1 = nn.Linear(32*6, 100)
         self.initialise_layer(self.fc1)
+        self.bn4 = nn.BatchNorm1d(100)
         # TODO is this right?
         self.fc2 = nn.Linear(100, 50)
         self.initialise_layer(self.fc2)
 
     def forward(self, input: torch.Tensor):
-        print(f'before first flatten {input.size()}')
+        #print(f'before first flatten {input.size()}')
+        input = (2*(input - torch.min(input)) / (torch.max(input) - torch.min(input))) - 1
         x = torch.flatten(input, 0, 1)
-        print(f'after first flatten {x.size()}')
-        x = F.relu(self.conv1(x))
-        print(f'after conv1 {x.size()}')
-        x = F.relu(self.conv2(x))
-        print(f'after conv2 {x.size()}')
+        #print(f'after first flatten {x.size()}')
+        x = F.relu((self.conv1(x)))
+        #x = self.bn1(x)
+        #print(f'after conv1 {x.size()}')
+        x = F.relu((self.conv2(x)))
+        #x = self.bn2(x)
+        #print(f'after conv2 {x.size()}')
         x = self.pool(x)
-        print(f'after pool1 {x.size()}')
-        x = F.relu(self.conv3(x))
-        print(f'after conv3 {x.size()}')
+        #print(f'after pool1 {x.size()}')
+        x = F.relu((self.conv3(x)))
+        #x = self.bn3(x)
+        #print(f'after conv3 {x.size()}')
         x = self.pool(x)
-        print(f'after pool2 {x.size()}')
+        #print(f'after pool2 {x.size()}')
         x = torch.flatten(x, start_dim=1)
-        print(f'after flatten2 {x.size()}')
-        x = F.relu(self.fc1(x))
+        #print(f'after flatten2 {x.size()}')
+        x = F.relu((self.fc1(x)))
+        #x = self.bn4(x)
         # TODO sigmoid fc2 or fc3?
         x = F.sigmoid(self.fc2(x))
         #print(f'after sigmoid', x)
         x = x.reshape(input.shape[0], input.shape[1], 50)
         x = torch.mean(x, 1)
-        print(f'after mean {x.size()}')
+        #print(x)
+        #print(f'after mean {x.size()}')
         #x = x.reshape(-1, 1)
-        print(f'after reshape {x.size()}')
+        #print(f'after reshape {x.size()}')
+        #print(x[0])
         return x
 
     @staticmethod
@@ -203,7 +219,7 @@ class Trainer:
             self.model.train()
             data_load_start_time = time.time()
             for filename, batch, labels in self.train_loader:
-                print(len(batch))
+                #print(len(batch))
                 batch = batch.to(self.device)
                 labels = labels.to(self.device)
                 data_load_end_time = time.time()
@@ -218,17 +234,17 @@ class Trainer:
                     preds = logits.argmax(-1).reshape(-1, 1)
                     # print("preds", preds.shape)
                     #accuracy = compute_accuracy(labels, preds)
-                    #accuracy = evaluate(preds=preds, gts_path=f'{path}annotations/train.pkl')
-                    accuracy = evaluate(preds=logits, gts_path=os.path.join(path, 'annotations', 'train_labels.pkl'))
+                    #accuracy = evaluate(preds=logits, gts_path=f'{path}annotations/train_labels.pkl')
+                    #accuracy = evaluate(preds=logits, gts_path=os.path.join(path, 'annotations', 'train_labels.pkl'))
 
                     
                 data_load_time = data_load_end_time - data_load_start_time
                 step_time = time.time() - data_load_end_time
                 
                 if ((self.step + 1) % log_frequency) == 0:
-                    self.log_metrics(epoch, accuracy, loss, data_load_time, step_time)
-                if ((self.step + 1) % print_frequency) == 0:
-                    self.print_metrics(epoch, accuracy, loss, data_load_time, step_time)
+                    self.log_metrics(epoch, 0, loss, data_load_time, step_time)
+                # if ((self.step + 1) % print_frequency) == 0:
+                #     self.print_metrics(epoch, 0, loss, data_load_time, step_time)
                     
                 self.step += 1
                 data_load_start_time = time.time()
@@ -276,22 +292,19 @@ class Trainer:
         total_loss = 0
         self.model.eval()
 
+        
         with torch.no_grad():
-            for batch, labels in self.val_loader:
+            for filename, batch, labels in self.val_loader:
                 batch = batch.to(self.device)
                 labels = labels.to(self.device)
                 logits = self.model(batch)
                 loss = self.criterion(logits, labels)
                 total_loss += loss.item()
-                preds = logits.argmax(dim=-1).cpu()
-                results["preds"].extend(list(preds))
-               # results["labels"].extend(list(labels.cpu().numpy()))
+                #preds = logits
+                results["preds"].extend(list(logits))
+                results["labels"].extend(list(labels.cpu().numpy()))
 
-        # accuracy = compute_accuracy(
-        #     np.array(results["labels"]), np.array(results["preds"])
-        # )
-
-        accuracy = evaluate(preds=preds, gts_path=f'{path}annotations/val.pkl')
+        accuracy = evaluate(preds=results['preds'], gts_path=f'{path}annotations/val_labels.pkl')
         
         average_loss = total_loss / len(self.val_loader)
 
@@ -335,6 +348,7 @@ def get_summary_writer_log_dir(args: argparse.Namespace) -> str:
         f"CNN_bn_"
         f"bs={args.batch_size}_"
         f"lr={args.learning_rate}_"
+        f"mom={args.mom}"
         f"run_"
     )
     i = 0
