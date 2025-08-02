@@ -31,7 +31,7 @@ def evaluate(preds, gts_path):
     model_outs = np.array(model_outs)
     print(labels.shape, model_outs.shape)
 
-    auc_score = roc_auc_score(y_true=labels, y_score=model_outs, average='micro')
+    auc_score = roc_auc_score(y_true=labels, y_score=model_outs)
     print("EVALUATION METRICS:")
     print("-------------------------------------------------------------")
     print()
